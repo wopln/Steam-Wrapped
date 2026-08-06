@@ -2,7 +2,18 @@
 
 Steam Wrapped is a Millennium plugin that adds a native Steam-style gaming activity summary to the Steam client. It brings a dedicated Wrapped page into Steam without opening a separate application or browser.
 
-![Steam Wrapped dashboard](docs/steam-wrapped-dashboard-v2.png)
+## Preview
+
+<table>
+  <tr>
+    <th colspan="2">Dashboard Overview</th>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="docs/screenshots/dashboard-overview.png" alt="Steam Wrapped dashboard overview" width="900">
+    </td>
+  </tr>
+</table>
 
 ## What it provides
 
