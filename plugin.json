@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/SteamClientHomebrew/Millennium/main/src/sys/plugin-schema.json",
+  "name": "steam-wrapped",
+  "common_name": "Steam Wrapped",
+  "description": "A native Steam Store entry point for Steam Wrapped.",
+  "version": "0.1.0",
+  "useBackend": false,
+  "backendType": "lua",
+  "webkitApiVersion": "2.0.0"
+}
