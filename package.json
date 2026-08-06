@@ -1,6 +1,6 @@
 {
   "name": "steam-wrapped",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "A Millennium plugin that adds the Steam Wrapped Store page.",
   "type": "module",

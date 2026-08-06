@@ -3,7 +3,7 @@
   "name": "steam-wrapped",
   "common_name": "Steam Wrapped",
   "description": "A native Steam Store entry point for Steam Wrapped.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "useBackend": false,
   "backendType": "lua",
   "webkitApiVersion": "2.0.0"

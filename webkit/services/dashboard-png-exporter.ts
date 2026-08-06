@@ -1,10 +1,13 @@
-import html2canvas from "html2canvas";
+import html2canvas, { type Options as Html2CanvasOptions } from "html2canvas";
 
 const DEFAULT_SCALE = 2;
 const DEFAULT_MAX_CANVAS_PIXELS = 32_000_000;
 const DEFAULT_MAX_CANVAS_DIMENSION = 8_192;
 const DEFAULT_READY_TIMEOUT_MS = 15_000;
+const FONT_READY_TIMEOUT_MS = 2_000;
+const IMAGE_READY_TIMEOUT_MS = 4_000;
 const IMAGE_DECODE_SETTLE_TIMEOUT_MS = 750;
+const PNG_ENCODING_FALLBACK_TIMEOUT_MS = 3_000;
 const NATIVE_DOWNLOAD_URL_RELEASE_DELAY_MS = 30_000;
 const DEFAULT_CAPTURE_BACKGROUND_COLOR = "#101c2a";
 const CLONE_LAYOUT_SETTLE_TIMEOUT_MS = 250;
@@ -94,6 +97,7 @@ export class DashboardPngExporter {
         maxCanvasPixels: positiveInteger(options.maxCanvasPixels, DEFAULT_MAX_CANVAS_PIXELS),
         maxCanvasDimension: positiveInteger(options.maxCanvasDimension, DEFAULT_MAX_CANVAS_DIMENSION),
       });
+      let renderedScale = scale;
       const filename = normalizeFilename(options.filename);
       const backgroundColor = options.backgroundColor === undefined
         ? DEFAULT_CAPTURE_BACKGROUND_COLOR
@@ -101,7 +105,7 @@ export class DashboardPngExporter {
       const capturePage = element.closest<HTMLElement>(".steam-wrapped-page");
       const restoreCloneFrameLayout = installHtml2CanvasFrameLayoutPatch(documentRef);
       try {
-        canvas = await html2canvas(element, {
+        const canvasOptions: Partial<Html2CanvasOptions> = {
           allowTaint: false,
           backgroundColor,
           // Canvas rendering is more reliable than SVG foreignObject rendering
@@ -125,19 +129,31 @@ export class DashboardPngExporter {
           onclone: async (clonedDocument, clonedElement) => {
             await prepareClonedDashboard(clonedDocument, clonedElement, bounds);
           },
-          scale,
-        });
+        };
+        try {
+          canvas = await html2canvas(element, { ...canvasOptions, scale });
+        } catch (firstCause) {
+          // Large Steam windows can exceed the CEF renderer's transient canvas
+          // memory even when the final dimensions are within our normal limits.
+          // Retry once at a still-sharp 1.25x scale before surfacing the error.
+          const fallbackScale = getFallbackCaptureScale(scale);
+          if (fallbackScale >= scale) {
+            throw firstCause;
+          }
+          renderedScale = fallbackScale;
+          canvas = await html2canvas(element, { ...canvasOptions, scale: fallbackScale });
+        }
       } finally {
         restoreCloneFrameLayout();
       }
 
       const blob = await canvasToPngBlob(canvas);
-      triggerBlobDownload(documentRef, windowRef, blob, filename);
+      await triggerBlobDownload(documentRef, windowRef, blob, filename);
       return {
         filename,
         sourceWidth: bounds.width,
         sourceHeight: bounds.height,
-        scale,
+        scale: renderedScale,
         outputWidth: canvas.width,
         outputHeight: canvas.height,
         byteLength: blob.size,
@@ -199,7 +215,17 @@ async function waitForFonts(documentRef: Document): Promise<void> {
   if (!documentRef.fonts) {
     return;
   }
-  await documentRef.fonts.ready;
+  const windowRef = documentRef.defaultView;
+  if (!windowRef) {
+    return;
+  }
+  // Some Steam CEF builds keep an inherited Store @font-face pending forever.
+  // The visible dashboard already has a usable fallback font, so do not let a
+  // font readiness quirk block an otherwise valid export.
+  await Promise.race([
+    documentRef.fonts.ready,
+    new Promise<void>((resolve) => windowRef.setTimeout(resolve, FONT_READY_TIMEOUT_MS)),
+  ]);
 }
 
 async function waitForVisibleImages(element: HTMLElement): Promise<void> {
@@ -249,13 +275,24 @@ async function waitForImage(image: HTMLImageElement): Promise<void> {
   }
 
   await new Promise<void>((resolve) => {
+    const windowRef = image.ownerDocument.defaultView;
+    let settled = false;
+    let timeout: number | undefined;
     const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       image.removeEventListener("load", finish);
       image.removeEventListener("error", finish);
+      if (timeout !== undefined) {
+        windowRef?.clearTimeout(timeout);
+      }
       resolve();
     };
     image.addEventListener("load", finish, { once: true });
     image.addEventListener("error", finish, { once: true });
+    timeout = windowRef?.setTimeout(finish, IMAGE_READY_TIMEOUT_MS);
   });
   await decodeImage(image);
 }
@@ -566,49 +603,124 @@ function constrainScale(
   return Math.max(0.1, Math.floor(safeScale * 100) / 100);
 }
 
+function getFallbackCaptureScale(scale: number): number {
+  const fallbackScale = Math.min(scale, 1.25);
+  return Math.max(0.1, Math.floor(fallbackScale * 100) / 100);
+}
+
 function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timeout: number | undefined;
+    const windowRef = canvas.ownerDocument.defaultView;
+    const finish = (blob: Blob | undefined, cause?: unknown): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeout !== undefined) {
+        windowRef?.clearTimeout(timeout);
+      }
+      if (blob && blob.size > 0) {
+        resolve(blob);
+        return;
+      }
+      reject(new DashboardPngExportError("Steam Wrapped could not encode the PNG export.", { cause }));
+    };
+    const useDataUrlFallback = (): void => {
+      try {
+        finish(dataUrlToBlob(canvas.toDataURL("image/png")));
+      } catch (cause) {
+        finish(undefined, cause);
+      }
+    };
+
     try {
+      if (typeof canvas.toBlob !== "function") {
+        useDataUrlFallback();
+        return;
+      }
+      timeout = windowRef?.setTimeout(useDataUrlFallback, PNG_ENCODING_FALLBACK_TIMEOUT_MS);
       canvas.toBlob((blob) => {
-        if (blob && blob.size > 0) {
-          resolve(blob);
-          return;
-        }
-        reject(new DashboardPngExportError("Steam Wrapped could not encode the PNG export."));
+        finish(blob ?? undefined);
       }, "image/png");
     } catch (cause) {
-      reject(new DashboardPngExportError("Steam Wrapped could not encode the PNG export.", { cause }));
+      useDataUrlFallback();
     }
   });
 }
 
-function triggerBlobDownload(
+async function triggerBlobDownload(
   documentRef: Document,
   windowRef: Window,
   blob: Blob,
   filename: string,
-): void {
+): Promise<void> {
   const steamWindow = windowRef as SteamDownloadWindow;
-  const objectUrl = steamWindow.URL.createObjectURL(blob);
+  let objectUrl: string | undefined;
+  try {
+    const urlApi = steamWindow.URL as typeof URL | undefined;
+    if (typeof urlApi?.createObjectURL === "function") {
+      objectUrl = urlApi.createObjectURL(blob);
+    }
+  } catch {
+    // Older Steam CEF builds may expose URL without createObjectURL.
+  }
+
+  const downloadUrl = objectUrl ?? await blobToDataUrl(blob);
   try {
     // Steam's own screenshot UI calls this native method. Unlike an anchor
     // click after asynchronous canvas rendering, it remains reliable in the
-    // Store CEF frame and accepts the generated blob URL directly.
-    if (startSteamBrowserDownload(windowRef, objectUrl)) {
+    // Store CEF frame. The data URL fallback also works when blob URLs are not
+    // accepted by the native downloader.
+    if (startSteamBrowserDownload(windowRef, downloadUrl)) {
       return;
     }
 
-    startAnchorDownload(documentRef, objectUrl, filename);
+    startAnchorDownload(documentRef, downloadUrl, filename);
   } catch (cause) {
     throw new DashboardPngExportError("Steam Wrapped could not start the PNG download.", { cause });
   } finally {
     // StartDownload is asynchronous and returns no completion signal. Keep
     // the Blob URL alive long enough for Steam's native downloader to read it.
-    windowRef.setTimeout(
-      () => steamWindow.URL.revokeObjectURL(objectUrl),
-      NATIVE_DOWNLOAD_URL_RELEASE_DELAY_MS,
-    );
+    if (objectUrl) {
+      windowRef.setTimeout(() => steamWindow.URL.revokeObjectURL(objectUrl!), NATIVE_DOWNLOAD_URL_RELEASE_DELAY_MS);
+    }
   }
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const separator = dataUrl.indexOf(",");
+  if (separator <= 0) {
+    throw new DashboardPngExportError("Steam Wrapped could not encode the PNG export.");
+  }
+  const metadata = dataUrl.slice(0, separator);
+  const payload = dataUrl.slice(separator + 1);
+  const binary = metadata.includes(";base64") ? atob(payload) : decodeURIComponent(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type: "image/png" });
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    try {
+      const reader = new FileReader();
+      reader.onload = (): void => {
+        if (typeof reader.result === "string" && reader.result.length > 0) {
+          resolve(reader.result);
+          return;
+        }
+        reject(new DashboardPngExportError("Steam Wrapped could not prepare the PNG download."));
+      };
+      reader.onerror = (): void => reject(reader.error ?? new Error("FileReader failed"));
+      reader.readAsDataURL(blob);
+    } catch (cause) {
+      reject(new DashboardPngExportError("Steam Wrapped could not prepare the PNG download.", { cause }));
+    }
+  });
 }
 
 function startSteamBrowserDownload(windowRef: Window, objectUrl: string): boolean {
