@@ -48,18 +48,6 @@ All dashboard values are calculated from the selected period and update when the
 
 After the plugin is approved in the [Millennium Plugin Database](https://github.com/SteamClientHomebrew/PluginDatabase), install **Steam Wrapped** from Millennium's plugin manager and reload Steam WebUI when prompted.
 
-For development, clone the repository into your Millennium plugins directory and build it with the commands below.
-
-## Development
-
-```powershell
-bun install
-bun run typecheck
-bun run build
-```
-
-The plugin is a WebKit-only Millennium plugin (`useBackend: false`) and uses Steam's in-client WebUI APIs for navigation and metadata. Session history and cached records remain local to the plugin; no separate service is required.
-
 ## Project status
 
 Steam Wrapped is actively being developed. The current release focuses on the native entry point, period-aware tracking, the summary dashboard, game and achievement navigation, recent activity, and image export. Additional Wrapped sections may be added over time.
