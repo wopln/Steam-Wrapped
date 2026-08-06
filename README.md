@@ -13,6 +13,18 @@ Steam Wrapped is a Millennium plugin that adds a native Steam-style gaming activ
       <img src="docs/screenshots/dashboard-overview.png" alt="Steam Wrapped dashboard overview" width="900">
     </td>
   </tr>
+  <tr>
+    <th>Recently Played</th>
+    <th>Achievements</th>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/screenshots/recently-played-modal.png" alt="Recently Played modal" width="420">
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/achievements-modal.png" alt="Achievements modal" width="420">
+    </td>
+  </tr>
 </table>
 
 ## What it provides
